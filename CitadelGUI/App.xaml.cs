@@ -375,6 +375,10 @@ namespace Te.Citadel
                                        }
 
                                        break;
+
+                                   default:
+                                       m_logger.Warn("Unsupported UpdateDialogResult: {0}", result.ToString());
+                                       break;
                                }
                            }
                        });

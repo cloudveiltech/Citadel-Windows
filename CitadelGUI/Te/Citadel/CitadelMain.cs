@@ -15,6 +15,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Te.Citadel.Util;
+using CloudVeil.Windows;
 
 namespace Te.Citadel
 {
@@ -31,6 +32,16 @@ namespace Te.Citadel
         [STAThread]
         public static void Main(string[] args)
         {
+            bool startMinimized = false;
+
+            foreach (string arg in args)
+            {
+                if (arg.IndexOf("StartMinimized") != -1)
+                {
+                    startMinimized = true;
+                }
+            }
+
             try
             {
                 if(Process.GetCurrentProcess().SessionId <= 0)
@@ -84,8 +95,11 @@ namespace Te.Citadel
                         {
                             foreach(var handle in WindowHelpers.EnumerateProcessWindowHandles(runningProcess.Id))
                             {
-                                // Send window show.
-                                WindowHelpers.SendMessage(handle, (uint)WindowMessages.SHOWWINDOW, 9, 0);
+                                // Send window show if /StartMinimized not set.
+                                if (!startMinimized)
+                                {
+                                    WindowHelpers.SendMessage(handle, (uint)WindowMessages.SHOWWINDOW, 9, 0);
+                                }
                             }
                         }
                     }
@@ -101,7 +115,10 @@ namespace Te.Citadel
                     {
                         using(var ipcClient = new IPCClient())
                         {
-                            ipcClient.RequestPrimaryClientShowUI();
+                            if (!startMinimized)
+                            {
+                                ipcClient.RequestPrimaryClientShowUI();
+                            }
 
                             // Wait plenty of time before dispose to allow delivery of the msg.
                             Task.Delay(500).Wait();
@@ -129,6 +146,8 @@ namespace Te.Citadel
 
             try
             {
+                Sentry.SentrySdk.Init(CompileSecrets.RavenDsn);
+
                 MainLogger = LoggerUtil.GetAppWideLogger();
             }
             catch { }

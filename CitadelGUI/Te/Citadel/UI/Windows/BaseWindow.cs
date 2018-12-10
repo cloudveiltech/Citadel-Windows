@@ -5,9 +5,12 @@
 * file, You can obtain one at http://mozilla.org/MPL/2.0/.
 */
 
+using Citadel.Core.Windows.Util;
 using MahApps.Metro.Controls;
 using MahApps.Metro.Controls.Dialogs;
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -26,12 +29,18 @@ namespace Te.Citadel.UI.Windows
 
     public class BaseWindow : MetroWindow
     {
+        public BaseWindow()
+        {
+            m_logger = LoggerUtil.GetAppWideLogger();
+        }
 
         public delegate void OnWindowRestoreRequested();
 
+        public static readonly TimeSpan TaskExpiryTimeout = new TimeSpan(12, 0, 0);
+
         public event OnWindowRestoreRequested WindowRestoreRequested;
 
-        private ReaderWriterLockSlim m_modalLock = new ReaderWriterLockSlim();
+        private NLog.Logger m_logger;
 
         /// <summary>
         /// Post a yes no question to the user in a dialogue. Caller must ensure that they're calling
@@ -48,70 +57,69 @@ namespace Te.Citadel.UI.Windows
         /// </returns>
         public async Task<bool> AskUserYesNoQuestion(string title, string question)
         {
-            // Why does this work? Because there is only 1 UI thread,
-            // and if not, you've got big problems.
-            if(m_modalLock.IsWriteLockHeld)
+            // Check to see if a dialog is currently displaying.
+            if(await DialogManager.GetCurrentDialogAsync<BaseMetroDialog>(this) != null)
             {
+                m_logger.Info("Failed to AskUserYesNoQuestion() thanks to write lock.");
+                Sentry.SentrySdk.CaptureMessage("Failed to AskUserYesNoQuestion() thanks to write lock.");
+
                 return false;
             }
 
-            try
-            {
-                m_modalLock.EnterWriteLock();
-                MetroDialogSettings mds = new MetroDialogSettings();
-                mds.AffirmativeButtonText = "Yes";
-                mds.NegativeButtonText = "No";
+            MetroDialogSettings mds = new MetroDialogSettings();
+            mds.AffirmativeButtonText = "Yes";
+            mds.NegativeButtonText = "No";
 
-                var userQueryResult = await DialogManager.ShowMessageAsync(this, title, question, MessageDialogStyle.AffirmativeAndNegative, mds);
+            var task = DialogManager.ShowMessageAsync(this, title, question, MessageDialogStyle.AffirmativeAndNegative, mds);
 
-                return userQueryResult == MessageDialogResult.Affirmative;
-            }
-            finally
-            {
-                m_modalLock.ExitWriteLock();
-            }
+            var userQueryResult = await task;
+
+            return userQueryResult == MessageDialogResult.Affirmative;
         }
 
         public async Task<UpdateDialogResult> AskUserUpdateQuestion(string title, string question)
         {
-            // Why does this work? Because there is only 1 UI thread,
-            // and if not, you've got big problems.
-            if (m_modalLock.IsWriteLockHeld)
+            // Check to see if a dialog is currently displaying.
+            if (await DialogManager.GetCurrentDialogAsync<BaseMetroDialog>(this) != null)
             {
+                m_logger.Info("Failed to AskUserUpdateQuestion() thanks to write lock.");
+                Sentry.SentrySdk.CaptureMessage("Failed to AskUserUpdateQuestion() thanks to write lock.");
+
                 return UpdateDialogResult.FailedOpen;
             }
 
-            try
-            {
-                m_modalLock.EnterWriteLock();
-                MetroDialogSettings settings = new MetroDialogSettings();
-                settings.AffirmativeButtonText = "Yes";
-                settings.NegativeButtonText = "Remind Me Later";
-                //settings.FirstAuxiliaryButtonText = "Skip This Version";
-                settings.DefaultButtonFocus = MessageDialogResult.Affirmative;
+            MetroDialogSettings settings = new MetroDialogSettings();
+            settings.AffirmativeButtonText = "Yes";
+            settings.NegativeButtonText = "Remind Me Later";
+            //settings.FirstAuxiliaryButtonText = "Skip This Version";
+            settings.DefaultButtonFocus = MessageDialogResult.Affirmative;
                 
-                var userQueryResult = await DialogManager.ShowMessageAsync(this, title, question, MessageDialogStyle.AffirmativeAndNegative, settings);
+            var userQueryResult = await DialogManager.ShowMessageAsync(this, title, question, MessageDialogStyle.AffirmativeAndNegative, settings);
 
-                switch(userQueryResult)
-                {
-                    case MessageDialogResult.Affirmative:
-                        return UpdateDialogResult.UpdateNow;
-
-                    case MessageDialogResult.Negative:
-                        return UpdateDialogResult.RemindLater;
-
-                    case MessageDialogResult.FirstAuxiliary:
-                        return UpdateDialogResult.SkipVersion;
-
-                    default:
-                        return UpdateDialogResult.FailedOpen;
-                }
-            }
-            finally
+            switch (userQueryResult)
             {
-                m_modalLock.ExitWriteLock();
+                case MessageDialogResult.Affirmative:
+                    return UpdateDialogResult.UpdateNow;
+
+                case MessageDialogResult.Negative:
+                    return UpdateDialogResult.RemindLater;
+
+                case MessageDialogResult.FirstAuxiliary:
+                    return UpdateDialogResult.SkipVersion;
+                default:
+                    return UpdateDialogResult.FailedOpen;
             }
+            
         }
+
+        private class UserMessageInfo
+        {
+            public string Title { get; set; }
+            public string Message { get; set; }
+            public string AcceptButtonText { get; set; }
+        }
+
+        private ConcurrentQueue<UserMessageInfo> m_messagesToDisplay = new ConcurrentQueue<UserMessageInfo>();
 
         /// <summary>
         /// Displays a message to the user as an overlay, that the user can only accept. Caller must
@@ -126,28 +134,21 @@ namespace Te.Citadel.UI.Windows
         /// <param name="acceptButtonText">
         /// The text to display in the acceptance button.
         /// </param>
-        public void ShowUserMessage(string title, string message, string acceptButtonText = "Ok")
-        {   
-            // Why does this work? Because there is only 1 UI thread,
-            // and if not, you've got big problems.
-            if(m_modalLock.IsWriteLockHeld)
+        public async void ShowUserMessage(string title, string message, string acceptButtonText = "Ok")
+        {
+            // Check to see if a dialog is currently displaying.
+            if (await DialogManager.GetCurrentDialogAsync<BaseMetroDialog>(this) != null)
             {
+                m_logger.Info("Failed to ShowUserMessage() thanks to write lock.");
+                Sentry.SentrySdk.CaptureMessage("Failed to ShowUserMessage() thanks to write lock.");
+
                 return;
             }
 
-            try
-            {
-                m_modalLock.EnterWriteLock();
+            MetroDialogSettings mds = new MetroDialogSettings();
+            mds.AffirmativeButtonText = acceptButtonText;
 
-                MetroDialogSettings mds = new MetroDialogSettings();
-                mds.AffirmativeButtonText = acceptButtonText;
-
-                DialogManager.ShowMessageAsync(this, title, message, MessageDialogStyle.Affirmative, mds);
-            }
-            finally
-            {
-                m_modalLock.ExitWriteLock();
-            }
+            await DialogManager.ShowMessageAsync(this, title, message, MessageDialogStyle.Affirmative, mds);
         }
 
         protected override void OnSourceInitialized(EventArgs e)
